@@ -209,6 +209,46 @@ private fun TinyBarBottomBar(
 }
 
 @Composable
+private fun FeedSearchTopBar(
+    keyword: String,
+    onKeywordChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    loading: Boolean
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = keyword,
+                onValueChange = onKeywordChange,
+                label = { Text("搜索帖子") },
+                placeholder = { Text("标题 / 作者 / 吧名") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            Button(
+                onClick = onSearch,
+                enabled = !loading,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(if (loading) "搜索中" else "搜索")
+            }
+        }
+    }
+}
+
+@Composable
 private fun FeedScreen(
     state: HomeUiState,
     onSearchQueryChange: (String) -> Unit,
@@ -216,58 +256,62 @@ private fun FeedScreen(
     onLoadNextPage: () -> Unit,
     onThreadClick: (ThreadSummary) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        item {
-            PageHeader(
-                title = "推荐",
-                subtitle = "来自不同贴吧的内容流"
-            )
-        }
-
-        item {
-            SearchCard(
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            FeedSearchTopBar(
                 keyword = state.searchQuery,
                 onKeywordChange = onSearchQueryChange,
-                onRefresh = onRefresh,
+                onSearch = onRefresh,
                 loading = state.isLoading
             )
         }
-
-        state.errorMessage?.let { msg ->
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .padding(padding),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
             item {
-                ErrorCard(
-                    message = msg,
-                    onRetry = onRefresh
+                PageHeader(
+                    title = "推荐",
+                    subtitle = "来自不同贴吧的内容流"
                 )
             }
-        }
 
-        if (state.isLoading && state.threads.isEmpty()) {
-            item {
-                LoadingCard(text = "正在搜索帖子...")
+            state.errorMessage?.let { msg ->
+                item {
+                    ErrorCard(
+                        message = msg,
+                        onRetry = onRefresh
+                    )
+                }
             }
-        }
 
-        items(state.threads, key = { it.tid }) { thread ->
-            FeedThreadCard(
-                thread = thread,
-                onClick = { onThreadClick(thread) }
-            )
-        }
+            if (state.isLoading && state.threads.isEmpty()) {
+                item {
+                    LoadingCard(text = "正在搜索帖子...")
+                }
+            }
 
-        if (state.threads.isNotEmpty()) {
-            item {
-                LoadMoreSection(
-                    isLoadingMore = state.isLoadingMore,
-                    hasMore = state.hasMore,
-                    onLoadNextPage = onLoadNextPage
+            items(state.threads, key = { it.tid }) { thread ->
+                FeedThreadCard(
+                    thread = thread,
+                    onClick = { onThreadClick(thread) }
                 )
+            }
+
+            if (state.threads.isNotEmpty()) {
+                item {
+                    LoadMoreSection(
+                        isLoadingMore = state.isLoadingMore,
+                        hasMore = state.hasMore,
+                        onLoadNextPage = onLoadNextPage
+                    )
+                }
             }
         }
     }
@@ -605,33 +649,15 @@ private fun FeedThreadCard(
             )
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                repeat(3) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .aspectRatio(1.2f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "预览",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            Row(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 MetaText(thread.forumName)
                 MetaText("作者 ${thread.author}")
-                MetaText("${thread.replyCount} 回复")
+                if (thread.replyCount > 0) {
+                    MetaText("${thread.replyCount} 回复")
+                }
+                MetaText(thread.lastReplyTimeText)
             }
         }
     }
@@ -1090,7 +1116,11 @@ private fun LoadMoreSection(
 }
 
 private fun buildThreadExcerpt(thread: ThreadSummary): String {
-    return "${thread.forumName}吧 · ${thread.author} 发布，当前有 ${thread.replyCount} 条回复，最近活跃于 ${thread.lastReplyTimeText}。"
+    return if (thread.excerpt.isNotBlank()) {
+        thread.excerpt
+    } else {
+        "${thread.forumName}吧 · ${thread.author} 发布，最近活跃于 ${thread.lastReplyTimeText}。"
+    }
 }
 
 private data class HotBarUi(

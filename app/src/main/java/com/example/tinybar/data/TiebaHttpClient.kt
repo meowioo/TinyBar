@@ -1,7 +1,9 @@
 package com.example.tinybar.data
 
+import com.example.tinybar.util.TiebaSignUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -20,6 +22,32 @@ class TiebaHttpClient(
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 ) {
+
+    suspend fun postSignedForm(
+        path: String,
+        params: Map<String, Any>
+    ): String = withContext(Dispatchers.IO) {
+        val signed = TiebaSignUtil.sign(params)
+
+        val body = FormBody.Builder().apply {
+            signed.forEach { (k, v) -> add(k, v) }
+        }.build()
+
+        val request = Request.Builder()
+            .url("${TiebaApiConst.APP_BASE_HOST}$path")
+            .post(body)
+            .header("User-Agent", "TinyBar/0.1")
+            .header("Host", "tiebac.baidu.com")
+            .header("Connection", "keep-alive")
+            .build()
+
+        client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IOException("HTTP ${resp.code}: ${resp.message}")
+            }
+            resp.body?.string() ?: throw IOException("Empty body")
+        }
+    }
 
     suspend fun postProto(
         path: String,
@@ -43,7 +71,6 @@ class TiebaHttpClient(
             .header("Host", "tiebac.baidu.com")
             .header("Connection", "keep-alive")
             .header("x_bd_data_type", "protobuf")
-            // 不要手动加 Accept-Encoding
             .build()
 
         client.newCall(request).execute().use { resp ->

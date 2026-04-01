@@ -16,21 +16,19 @@ import com.example.tinybar.tieba.proto.User
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-private const val PAGE_SIZE = 30
+private const val FEED_PAGE_SIZE = 30
+private const val MAIN_VERSION = "12.64.1.1"
 
 class RealTiebaDataSource(
     private val http: TiebaHttpClient = TiebaHttpClient()
 ) : TiebaDataSource {
 
-    /**
-     * 推荐页默认聚合这些吧。
-     * 你后面可以自己继续加。
-     */
     private val recommendedBars = listOf(
         "原神",
         "崩坏：星穹铁道",
@@ -41,41 +39,52 @@ class RealTiebaDataSource(
     )
 
     override suspend fun getRecommendedFeed(query: String, page: Int): FeedPage = coroutineScope {
-        val forumPages = recommendedBars.map { barName ->
+        if (query.isBlank()) {
+            val forumPages = recommendedBars.map { barName ->
+                async {
+                    runCatching { getForumPage(barName, page) }.getOrNull()
+                }
+            }.awaitAll().filterNotNull()
+
+            val mergedThreads = forumPages
+                .flatMap { it.threads }
+                .sortedByDescending { it.replyCount }
+                .distinctBy { it.tid }
+
+            return@coroutineScope FeedPage(
+                threads = mergedThreads,
+                hasMore = forumPages.any { it.threads.size >= FEED_PAGE_SIZE }
+            )
+        }
+
+        val searchBuckets = recommendedBars.map { barName ->
             async {
-                runCatching { getForumPage(barName, page) }.getOrNull()
+                runCatching { searchThreadsInForum(barName, query, page) }.getOrNull()
             }
         }.awaitAll().filterNotNull()
 
-        val filteredThreads = forumPages
+        val mergedSearchThreads = searchBuckets
             .flatMap { it.threads }
-            .filter { thread ->
-                query.isBlank() ||
-                        thread.title.contains(query, ignoreCase = true) ||
-                        thread.author.contains(query, ignoreCase = true) ||
-                        thread.forumName.contains(query, ignoreCase = true)
-            }
-            .sortedByDescending { it.replyCount }
             .distinctBy { it.tid }
 
         FeedPage(
-            threads = filteredThreads,
-            hasMore = forumPages.any { it.threads.size >= PAGE_SIZE }
+            threads = mergedSearchThreads,
+            hasMore = searchBuckets.any { it.hasMore }
         )
     }
 
     override suspend fun getForumPage(forumName: String, page: Int): ForumPage {
         val common = CommonReq.newBuilder()
             .setClientType(2)
-            .setClientVersion("12.64.1.1")
+            .setClientVersion(MAIN_VERSION)
             .build()
 
         val data = FrsPageReqIdl.DataReq.newBuilder()
             .setCommon(common)
             .setKw(forumName)
             .setPn(if (page == 1) 0 else page)
-            .setRn(PAGE_SIZE)
-            .setRnNeed(PAGE_SIZE + 5)
+            .setRn(FEED_PAGE_SIZE)
+            .setRnNeed(FEED_PAGE_SIZE + 5)
             .setIsGood(0)
             .setSortType(0)
             .build()
@@ -116,7 +125,8 @@ class RealTiebaDataSource(
                 author = userName(thread.author),
                 replyCount = thread.replyNum,
                 lastReplyTimeText = epochSecondsToText(thread.lastTimeInt.toLong()),
-                forumName = forumName
+                forumName = forumName,
+                excerpt = ""
             )
         }
 
@@ -129,7 +139,7 @@ class RealTiebaDataSource(
     override suspend fun getPosts(tid: String, page: Int): List<PostItem> {
         val common = CommonReq.newBuilder()
             .setClientType(2)
-            .setClientVersion("12.64.1.1")
+            .setClientVersion(MAIN_VERSION)
             .build()
 
         val data = PbPageReqIdl.DataReq.newBuilder()
@@ -162,6 +172,63 @@ class RealTiebaDataSource(
         return res.data.postListList.map { post ->
             post.toUiModel()
         }
+    }
+
+    private suspend fun searchThreadsInForum(
+        forumName: String,
+        query: String,
+        page: Int
+    ): SearchBucket {
+        val text = http.postSignedForm(
+            path = "/c/s/searchpost",
+            params = mapOf(
+                "_client_version" to MAIN_VERSION,
+                "kw" to forumName,
+                "only_thread" to 1,
+                "pn" to page,
+                "rn" to FEED_PAGE_SIZE,
+                "sm" to 0,
+                "word" to query
+            )
+        )
+
+        val root = JSONObject(text)
+        val errorCode = root.optInt("error_code", 0)
+        if (errorCode != 0) {
+            throw IllegalStateException(
+                "Tieba error $errorCode: ${root.optString("error_msg")}"
+            )
+        }
+
+        val pageObj = root.optJSONObject("page")
+        val hasMore = pageObj?.optInt("has_more", 0) == 1
+
+        val postList = root.optJSONArray("post_list")
+        val threads = buildList {
+            if (postList != null) {
+                for (i in 0 until postList.length()) {
+                    val item = postList.optJSONObject(i) ?: continue
+                    val author = item.optJSONObject("author")
+
+                    add(
+                        ThreadSummary(
+                            tid = item.optString("tid"),
+                            title = item.optString("title").ifBlank { "（无标题）" },
+                            author = author?.optString("name_show").orEmpty().ifBlank { "未知用户" },
+                            replyCount = 0,
+                            lastReplyTimeText = epochSecondsToText(item.optLong("time", 0L)),
+                            forumName = item.optString("fname").ifBlank { forumName },
+                            excerpt = item.optString("content").trim()
+                        )
+                    )
+                }
+            }
+        }
+
+        return SearchBucket(
+            threads = threads,
+            hasMore = hasMore
+        )
     }
 
     private fun Post.toUiModel(): PostItem {
@@ -205,4 +272,9 @@ class RealTiebaDataSource(
         sdf.timeZone = TimeZone.getDefault()
         return sdf.format(Date(seconds * 1000))
     }
+
+    private data class SearchBucket(
+        val threads: List<ThreadSummary>,
+        val hasMore: Boolean
+    )
 }
