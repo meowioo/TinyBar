@@ -14,7 +14,8 @@ data class ThreadSummary(
     val title: String,
     val author: String,
     val replyCount: Int,
-    val lastReplyTimeText: String
+    val lastReplyTimeText: String,
+    val forumName: String
 )
 
 data class CommentItem(

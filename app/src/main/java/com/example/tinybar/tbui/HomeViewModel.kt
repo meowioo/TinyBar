@@ -6,21 +6,17 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.tinybar.data.TiebaRepository
-import com.example.tinybar.model.ForumInfo
 import com.example.tinybar.model.ThreadSummary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-private const val PAGE_SIZE = 30
-
 data class HomeUiState(
-    val forumNameInput: String = "原神",
+    val searchQuery: String = "",
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
     val errorMessage: String? = null,
-    val forumInfo: ForumInfo? = null,
     val threads: List<ThreadSummary> = emptyList(),
     val currentPage: Int = 0,
     val hasMore: Boolean = true
@@ -37,35 +33,22 @@ class HomeViewModel(
         refresh()
     }
 
-    fun onForumNameChange(value: String) {
-        _uiState.value = _uiState.value.copy(forumNameInput = value)
+    fun onSearchQueryChange(value: String) {
+        _uiState.value = _uiState.value.copy(searchQuery = value)
     }
 
-    /**
-     * 重新加载首页：
-     * - 从第 1 页开始
-     * - 覆盖旧数据
-     */
     fun refresh() {
         loadPage(page = 1, append = false)
     }
 
-    /**
-     * 加载下一页：
-     * - 只追加，不覆盖
-     */
     fun loadNextPage() {
         val state = _uiState.value
-
-        if (state.isLoading || state.isLoadingMore || !state.hasMore) {
-            return
-        }
-
+        if (state.isLoading || state.isLoadingMore || !state.hasMore) return
         loadPage(page = state.currentPage + 1, append = true)
     }
 
     private fun loadPage(page: Int, append: Boolean) {
-        val forumName = _uiState.value.forumNameInput.trim().ifBlank { "原神" }
+        val query = _uiState.value.searchQuery.trim()
         val oldState = _uiState.value
 
         viewModelScope.launch {
@@ -84,23 +67,21 @@ class HomeViewModel(
             }
 
             runCatching {
-                repository.getForumPage(forumName, page)
-            }.onSuccess { forumPage ->
-                val newThreads = forumPage.threads
+                repository.getRecommendedFeed(query = query, page = page)
+            }.onSuccess { feedPage ->
                 val mergedThreads = if (append) {
-                    (oldState.threads + newThreads).distinctBy { it.tid }
+                    (oldState.threads + feedPage.threads).distinctBy { it.tid }
                 } else {
-                    newThreads.distinctBy { it.tid }
+                    feedPage.threads.distinctBy { it.tid }
                 }
 
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     isLoadingMore = false,
                     errorMessage = null,
-                    forumInfo = forumPage.forumInfo ?: oldState.forumInfo,
                     threads = mergedThreads,
                     currentPage = page,
-                    hasMore = newThreads.size >= PAGE_SIZE
+                    hasMore = feedPage.hasMore
                 )
             }.onFailure { e ->
                 _uiState.value = _uiState.value.copy(

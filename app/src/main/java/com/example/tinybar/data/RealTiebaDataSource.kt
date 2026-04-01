@@ -1,5 +1,6 @@
 package com.example.tinybar.data
 
+import com.example.tinybar.model.FeedPage
 import com.example.tinybar.model.ForumInfo
 import com.example.tinybar.model.ForumPage
 import com.example.tinybar.model.PostItem
@@ -12,14 +13,56 @@ import com.example.tinybar.tieba.proto.PbPageReqIdl
 import com.example.tinybar.tieba.proto.PbPageResIdl
 import com.example.tinybar.tieba.proto.Post
 import com.example.tinybar.tieba.proto.User
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
+private const val PAGE_SIZE = 30
+
 class RealTiebaDataSource(
     private val http: TiebaHttpClient = TiebaHttpClient()
 ) : TiebaDataSource {
+
+    /**
+     * 推荐页默认聚合这些吧。
+     * 你后面可以自己继续加。
+     */
+    private val recommendedBars = listOf(
+        "原神",
+        "崩坏：星穹铁道",
+        "明日方舟",
+        "安卓",
+        "数码",
+        "Jetpack Compose"
+    )
+
+    override suspend fun getRecommendedFeed(query: String, page: Int): FeedPage = coroutineScope {
+        val forumPages = recommendedBars.map { barName ->
+            async {
+                runCatching { getForumPage(barName, page) }.getOrNull()
+            }
+        }.awaitAll().filterNotNull()
+
+        val filteredThreads = forumPages
+            .flatMap { it.threads }
+            .filter { thread ->
+                query.isBlank() ||
+                        thread.title.contains(query, ignoreCase = true) ||
+                        thread.author.contains(query, ignoreCase = true) ||
+                        thread.forumName.contains(query, ignoreCase = true)
+            }
+            .sortedByDescending { it.replyCount }
+            .distinctBy { it.tid }
+
+        FeedPage(
+            threads = filteredThreads,
+            hasMore = forumPages.any { it.threads.size >= PAGE_SIZE }
+        )
+    }
 
     override suspend fun getForumPage(forumName: String, page: Int): ForumPage {
         val common = CommonReq.newBuilder()
@@ -31,8 +74,8 @@ class RealTiebaDataSource(
             .setCommon(common)
             .setKw(forumName)
             .setPn(if (page == 1) 0 else page)
-            .setRn(30)
-            .setRnNeed(35)
+            .setRn(PAGE_SIZE)
+            .setRnNeed(PAGE_SIZE + 5)
             .setIsGood(0)
             .setSortType(0)
             .build()
@@ -57,10 +100,7 @@ class RealTiebaDataSource(
         val forum = runCatching {
             val f = res.data.forum
             ForumInfo(
-                fid = when {
-                    f.id != 0L -> f.id.toString()
-                    else -> ""
-                },
+                fid = if (f.id != 0L) f.id.toString() else "",
                 name = f.name.ifBlank { forumName },
                 slogan = "欢迎来到 ${forumName} 吧",
                 memberCount = f.memberNum,
@@ -75,7 +115,8 @@ class RealTiebaDataSource(
                 title = thread.title.ifBlank { "（无标题）" },
                 author = userName(thread.author),
                 replyCount = thread.replyNum,
-                lastReplyTimeText = epochSecondsToText(thread.lastTimeInt.toLong())
+                lastReplyTimeText = epochSecondsToText(thread.lastTimeInt.toLong()),
+                forumName = forumName
             )
         }
 

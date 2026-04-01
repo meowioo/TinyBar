@@ -111,7 +111,7 @@ fun TinyBarApp(
 
                 FeedScreen(
                     state = state,
-                    onForumNameChange = vm::onForumNameChange,
+                    onSearchQueryChange = vm::onSearchQueryChange,
                     onRefresh = vm::refresh,
                     onLoadNextPage = vm::loadNextPage,
                     onThreadClick = { thread ->
@@ -211,13 +211,11 @@ private fun TinyBarBottomBar(
 @Composable
 private fun FeedScreen(
     state: HomeUiState,
-    onForumNameChange: (String) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
     onRefresh: () -> Unit,
     onLoadNextPage: () -> Unit,
     onThreadClick: (ThreadSummary) -> Unit
 ) {
-    val currentBarName = state.forumInfo?.name ?: state.forumNameInput.ifBlank { "原神" }
-
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -227,24 +225,18 @@ private fun FeedScreen(
     ) {
         item {
             PageHeader(
-                title = "TinyBar",
-                subtitle = "轻量浏览贴吧内容"
+                title = "推荐",
+                subtitle = "来自不同贴吧的内容流"
             )
         }
 
         item {
             SearchCard(
-                keyword = state.forumNameInput,
-                onKeywordChange = onForumNameChange,
+                keyword = state.searchQuery,
+                onKeywordChange = onSearchQueryChange,
                 onRefresh = onRefresh,
                 loading = state.isLoading
             )
-        }
-
-        state.forumInfo?.let { forum ->
-            item {
-                ForumHeroCard(forum = forum)
-            }
         }
 
         state.errorMessage?.let { msg ->
@@ -258,14 +250,13 @@ private fun FeedScreen(
 
         if (state.isLoading && state.threads.isEmpty()) {
             item {
-                LoadingCard(text = "正在加载帖子...")
+                LoadingCard(text = "正在搜索帖子...")
             }
         }
 
         items(state.threads, key = { it.tid }) { thread ->
             FeedThreadCard(
                 thread = thread,
-                forumName = currentBarName,
                 onClick = { onThreadClick(thread) }
             )
         }
@@ -515,7 +506,8 @@ private fun SearchCard(
             OutlinedTextField(
                 value = keyword,
                 onValueChange = onKeywordChange,
-                label = { Text("输入吧名") },
+                label = { Text("搜索帖子标题 / 作者 / 吧名") },
+                placeholder = { Text("例如：联动、抽卡、更新") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp)
@@ -530,7 +522,7 @@ private fun SearchCard(
                 ),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Text(if (loading) "加载中..." else "加载帖子")
+                Text(if (loading) "搜索中..." else "搜索帖子")
             }
         }
     }
@@ -574,7 +566,6 @@ private fun ForumHeroCard(forum: ForumInfo) {
 @Composable
 private fun FeedThreadCard(
     thread: ThreadSummary,
-    forumName: String,
     onClick: () -> Unit
 ) {
     Card(
@@ -595,7 +586,7 @@ private fun FeedThreadCard(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            BlueTag(text = forumName)
+            BlueTag(text = thread.forumName)
 
             Text(
                 text = thread.title,
@@ -638,9 +629,9 @@ private fun FeedThreadCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
+                MetaText(thread.forumName)
                 MetaText("作者 ${thread.author}")
                 MetaText("${thread.replyCount} 回复")
-                MetaText(thread.lastReplyTimeText)
             }
         }
     }
@@ -1099,7 +1090,7 @@ private fun LoadMoreSection(
 }
 
 private fun buildThreadExcerpt(thread: ThreadSummary): String {
-    return "来自 ${thread.author} 的帖子，目前有 ${thread.replyCount} 条回复，最近活跃时间为 ${thread.lastReplyTimeText}。正文摘要和图片预览后续接入真实接口后可替换。"
+    return "${thread.forumName}吧 · ${thread.author} 发布，当前有 ${thread.replyCount} 条回复，最近活跃于 ${thread.lastReplyTimeText}。"
 }
 
 private data class HotBarUi(
