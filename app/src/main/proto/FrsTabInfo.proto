@@ -1,0 +1,9 @@
+// tbclient.FrsTabInfo
+syntax = "proto3";
+option java_package = "com.example.tinybar.tieba.proto";
+option java_multiple_files = true;
+
+message FrsTabInfo {
+    int32 tab_id = 1;
+    string tab_name = 3;
+}

@@ -1,0 +1,9 @@
+// tbclient.Error
+syntax = "proto3";
+option java_package = "com.example.tinybar.tieba.proto";
+option java_multiple_files = true;
+
+message Error {
+    int32 errorno = 1;
+    string errmsg = 2;
+}
