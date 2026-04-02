@@ -17,12 +17,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.json.JSONObject
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-private const val FEED_PAGE_SIZE = 30
+private const val PAGE_SIZE = 30
 private const val MAIN_VERSION = "12.64.1.1"
 
 class RealTiebaDataSource(
@@ -53,23 +54,13 @@ class RealTiebaDataSource(
 
             return@coroutineScope FeedPage(
                 threads = mergedThreads,
-                hasMore = forumPages.any { it.threads.size >= FEED_PAGE_SIZE }
+                hasMore = forumPages.any { it.threads.size >= PAGE_SIZE }
             )
         }
 
-        val searchBuckets = recommendedBars.map { barName ->
-            async {
-                runCatching { searchThreadsInForum(barName, query, page) }.getOrNull()
-            }
-        }.awaitAll().filterNotNull()
-
-        val mergedSearchThreads = searchBuckets
-            .flatMap { it.threads }
-            .distinctBy { it.tid }
-
-        FeedPage(
-            threads = mergedSearchThreads,
-            hasMore = searchBuckets.any { it.hasMore }
+        return@coroutineScope searchThreadsByHybridApi(
+            keyword = query,
+            page = page
         )
     }
 
@@ -83,8 +74,8 @@ class RealTiebaDataSource(
             .setCommon(common)
             .setKw(forumName)
             .setPn(if (page == 1) 0 else page)
-            .setRn(FEED_PAGE_SIZE)
-            .setRnNeed(FEED_PAGE_SIZE + 5)
+            .setRn(PAGE_SIZE)
+            .setRnNeed(PAGE_SIZE + 5)
             .setIsGood(0)
             .setSortType(0)
             .build()
@@ -174,61 +165,88 @@ class RealTiebaDataSource(
         }
     }
 
-    private suspend fun searchThreadsInForum(
-        forumName: String,
-        query: String,
+    private suspend fun searchThreadsByHybridApi(
+        keyword: String,
         page: Int
-    ): SearchBucket {
-        val text = http.postSignedForm(
-            path = "/c/s/searchpost",
-            params = mapOf(
-                "_client_version" to MAIN_VERSION,
-                "kw" to forumName,
-                "only_thread" to 1,
-                "pn" to page,
-                "rn" to FEED_PAGE_SIZE,
-                "sm" to 0,
-                "word" to query
+    ): FeedPage {
+        val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
+        val referer = buildHybridSearchReferer(keyword)
+
+        val url = buildString {
+            append("https://tieba.baidu.com/mo/q/search/thread")
+            append("?word=").append(encodedKeyword)
+            append("&pn=").append(page)
+            append("&st=0")
+            append("&tt=1")
+            append("&rn=").append(PAGE_SIZE)
+            append("&ct=1")
+            append("&is_use_zonghe=1")
+            append("&cv=99.9.101")
+        }
+
+        val text = http.getText(
+            url = url,
+            headers = mapOf(
+                "Referer" to referer,
+                "Accept" to "application/json, text/plain, */*"
             )
         )
 
         val root = JSONObject(text)
-        val errorCode = root.optInt("error_code", 0)
+        val errorCode = root.optInt("no", 0)
         if (errorCode != 0) {
             throw IllegalStateException(
-                "Tieba error $errorCode: ${root.optString("error_msg")}"
+                "Tieba error $errorCode: ${root.optString("error")}"
             )
         }
 
-        val pageObj = root.optJSONObject("page")
-        val hasMore = pageObj?.optInt("has_more", 0) == 1
+        val data = root.optJSONObject("data")
+            ?: throw IllegalStateException("搜索结果 data 为空")
 
-        val postList = root.optJSONArray("post_list")
+        val hasMore = data.optInt("has_more", 0) == 1
+        val postList = data.optJSONArray("post_list")
+
         val threads = buildList {
             if (postList != null) {
                 for (i in 0 until postList.length()) {
                     val item = postList.optJSONObject(i) ?: continue
-                    val author = item.optJSONObject("author")
+                    val user = item.optJSONObject("user")
 
                     add(
                         ThreadSummary(
                             tid = item.optString("tid"),
                             title = item.optString("title").ifBlank { "（无标题）" },
-                            author = author?.optString("name_show").orEmpty().ifBlank { "未知用户" },
-                            replyCount = 0,
-                            lastReplyTimeText = epochSecondsToText(item.optLong("time", 0L)),
-                            forumName = item.optString("fname").ifBlank { forumName },
-                            excerpt = item.optString("content").trim()
+                            author = user?.optString("show_nickname")
+                                .orEmpty()
+                                .ifBlank { user?.optString("user_name").orEmpty() }
+                                .ifBlank { "未知用户" },
+                            replyCount = item.optString("post_num").toIntOrNull() ?: 0,
+                            lastReplyTimeText = item.optString("time").ifBlank { "-" },
+                            forumName = item.optString("forum_name").ifBlank { "未知吧" },
+                            excerpt = cleanSearchExcerpt(item.optString("content"))
                         )
                     )
                 }
             }
-        }
+        }.distinctBy { it.tid }
 
-        return SearchBucket(
+        return FeedPage(
             threads = threads,
             hasMore = hasMore
         )
+    }
+
+    private fun buildHybridSearchReferer(keyword: String): String {
+        val raw = "https://tieba.baidu.com/mo/q/hybrid/search?keyword=$keyword&_webview_time=${System.currentTimeMillis()}"
+        return URLEncoder.encode(raw, "UTF-8")
+    }
+
+    private fun cleanSearchExcerpt(content: String): String {
+        return content
+            .replace(Regex("<[^>]+>"), "")
+            .replace("&nbsp;", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun Post.toUiModel(): PostItem {
@@ -272,9 +290,4 @@ class RealTiebaDataSource(
         sdf.timeZone = TimeZone.getDefault()
         return sdf.format(Date(seconds * 1000))
     }
-
-    private data class SearchBucket(
-        val threads: List<ThreadSummary>,
-        val hasMore: Boolean
-    )
 }

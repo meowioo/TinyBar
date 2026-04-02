@@ -23,6 +23,30 @@ class TiebaHttpClient(
         .build()
 ) {
 
+    suspend fun getText(
+        url: String,
+        headers: Map<String, String> = emptyMap()
+    ): String = withContext(Dispatchers.IO) {
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .get()
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 13; TinyBar) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Mobile Safari/537.36"
+            )
+
+        headers.forEach { (k, v) ->
+            requestBuilder.header(k, v)
+        }
+
+        client.newCall(requestBuilder.build()).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IOException("HTTP ${resp.code}: ${resp.message}")
+            }
+            resp.body?.string() ?: throw IOException("Empty body")
+        }
+    }
+
     suspend fun postSignedForm(
         path: String,
         params: Map<String, Any>
