@@ -16,7 +16,9 @@ data class ThreadSummary(
     val replyCount: Int,
     val lastReplyTimeText: String,
     val forumName: String,
-    val excerpt: String = ""
+    val excerpt: String = "",
+    val avatarUrl: String = "",
+    val imageUrls: List<String> = emptyList()
 )
 
 data class CommentItem(

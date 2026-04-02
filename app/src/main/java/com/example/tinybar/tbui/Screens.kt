@@ -63,6 +63,9 @@ import com.example.tinybar.model.CommentItem
 import com.example.tinybar.model.ForumInfo
 import com.example.tinybar.model.PostItem
 import com.example.tinybar.model.ThreadSummary
+import coil.compose.AsyncImage
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.layout.ContentScale
 
 private enum class MainTab(val route: String, val label: String, val shortMark: String) {
     Feed("feed", "推荐", "荐"),
@@ -627,10 +630,10 @@ private fun FeedThreadCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            BlueTag(text = thread.forumName)
+            FeedThreadHeader(thread = thread)
 
             Text(
                 text = thread.title,
@@ -644,21 +647,15 @@ private fun FeedThreadCard(
                 text = buildThreadExcerpt(thread),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
+                maxLines = 4,
                 overflow = TextOverflow.Ellipsis
             )
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                MetaText(thread.forumName)
-                MetaText("作者 ${thread.author}")
-                if (thread.replyCount > 0) {
-                    MetaText("${thread.replyCount} 回复")
-                }
-                MetaText(thread.lastReplyTimeText)
-            }
+            FeedThreadImages(
+                imageUrls = thread.imageUrls
+            )
+
+            FeedThreadFooter(thread = thread)
         }
     }
 }
@@ -1115,11 +1112,110 @@ private fun LoadMoreSection(
     }
 }
 
+@Composable
+private fun FeedThreadHeader(thread: ThreadSummary) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (thread.avatarUrl.isNotBlank()) {
+            AsyncImage(
+                model = thread.avatarUrl,
+                contentDescription = "用户头像",
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = thread.author.take(1).ifBlank { "?" },
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Text(
+            text = thread.author,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
+private fun FeedThreadImages(imageUrls: List<String>) {
+    when {
+        imageUrls.isEmpty() -> Unit
+
+        imageUrls.size == 1 -> {
+            AsyncImage(
+                model = imageUrls.first(),
+                contentDescription = "帖子图片",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentScale = ContentScale.Crop
+            )
+        }
+
+        else -> {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                imageUrls.take(2).forEach { url ->
+                    AsyncImage(
+                        model = url,
+                        contentDescription = "帖子图片",
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(140.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeedThreadFooter(thread: ThreadSummary) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BlueTag(text = thread.forumName)
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MetaText("${thread.replyCount}")
+            MetaText(thread.lastReplyTimeText)
+        }
+    }
+}
+
 private fun buildThreadExcerpt(thread: ThreadSummary): String {
     return if (thread.excerpt.isNotBlank()) {
         thread.excerpt
     } else {
-        "${thread.forumName}吧 · ${thread.author} 发布，最近活跃于 ${thread.lastReplyTimeText}。"
+        "${thread.forumName}吧 · ${thread.author} 发布"
     }
 }
 

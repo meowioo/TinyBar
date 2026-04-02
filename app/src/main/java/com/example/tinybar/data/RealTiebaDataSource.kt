@@ -222,7 +222,9 @@ class RealTiebaDataSource(
                         replyCount = item.optString("reply_num").toIntOrNull() ?: 0,
                         lastReplyTimeText = parseLastTime(item),
                         forumName = item.optString("fname").ifBlank { "推荐" },
-                        excerpt = parsePersonalizedExcerpt(item)
+                        excerpt = parsePersonalizedExcerpt(item),
+                        avatarUrl = parseAvatarUrl(item.optJSONObject("author")),
+                        imageUrls = parseImageUrls(item)
                     )
                 )
             }
@@ -304,7 +306,9 @@ class RealTiebaDataSource(
                             replyCount = item.optString("post_num").toIntOrNull() ?: 0,
                             lastReplyTimeText = item.optString("time").ifBlank { "-" },
                             forumName = item.optString("forum_name").ifBlank { "未知吧" },
-                            excerpt = cleanSearchExcerpt(item.optString("content"))
+                            excerpt = cleanSearchExcerpt(item.optString("content")),
+                            avatarUrl = parseAvatarUrl(user),
+                            imageUrls = parseImageUrls(item)
                         )
                     )
                 }
@@ -315,6 +319,96 @@ class RealTiebaDataSource(
             threads = threads,
             hasMore = hasMore
         )
+    }
+
+    private fun parseAvatarUrl(author: JSONObject?): String {
+        if (author == null) return ""
+
+        val direct = listOf(
+            "avatar",
+            "avatar_url",
+            "portrait_url",
+            "user_portrait",
+            "icon"
+        ).firstNotNullOfOrNull { key ->
+            author.optString(key).takeIf { it.isNotBlank() && it.startsWith("http") }
+        }
+        if (!direct.isNullOrBlank()) return direct
+
+        val portrait = author.optString("portrait")
+        if (portrait.isNotBlank()) {
+            return "https://tb.himg.baidu.com/sys/portrait/item/$portrait"
+        }
+
+        return ""
+    }
+
+    private fun parseImageUrls(item: JSONObject): List<String> {
+        val results = linkedSetOf<String>()
+        collectImageUrls(item, results)
+        return results.take(2)
+    }
+
+    private fun collectImageUrls(any: Any?, out: MutableSet<String>) {
+        when (any) {
+            is JSONObject -> {
+                val iterator = any.keys()
+                while (iterator.hasNext()) {
+                    val key = iterator.next()
+                    val value = any.opt(key)
+
+                    if (value is String && looksLikeImageUrl(key, value)) {
+                        out.add(normalizeImageUrl(value))
+                    } else {
+                        collectImageUrls(value, out)
+                    }
+                }
+            }
+
+            is JSONArray -> {
+                for (i in 0 until any.length()) {
+                    collectImageUrls(any.opt(i), out)
+                }
+            }
+
+            is String -> {
+                if (looksLikeImageUrl("", any)) {
+                    out.add(normalizeImageUrl(any))
+                }
+            }
+        }
+    }
+
+    private fun looksLikeImageUrl(key: String, value: String): Boolean {
+        if (value.isBlank()) return false
+
+        val lowerKey = key.lowercase(Locale.ROOT)
+        val lowerValue = value.lowercase(Locale.ROOT)
+
+        val keyLikeImage = listOf(
+            "img", "image", "src", "pic", "cover", "thumbnail", "small", "medium", "big"
+        ).any { lowerKey.contains(it) }
+
+        val valueLikeImage = lowerValue.startsWith("http") && (
+                lowerValue.contains(".jpg") ||
+                        lowerValue.contains(".jpeg") ||
+                        lowerValue.contains(".png") ||
+                        lowerValue.contains(".webp") ||
+                        lowerValue.contains(".gif") ||
+                        lowerValue.contains("tbimg") ||
+                        lowerValue.contains("imgsa.baidu") ||
+                        lowerValue.contains("hiphotos") ||
+                        lowerValue.contains("tiebapic")
+                )
+
+        return keyLikeImage || valueLikeImage
+    }
+
+    private fun normalizeImageUrl(url: String): String {
+        return when {
+            url.startsWith("//") -> "https:$url"
+            else -> url
+        }
     }
 
     /**

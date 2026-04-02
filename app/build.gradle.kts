@@ -89,4 +89,6 @@ dependencies {
 
     implementation(libs.squareup.okhttp)
     implementation(libs.google.protobuf.javalite)
+
+    implementation(libs.coil.compose)
 }
