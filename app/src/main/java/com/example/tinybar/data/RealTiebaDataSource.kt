@@ -324,7 +324,7 @@ class RealTiebaDataSource(
     private fun parseAvatarUrl(author: JSONObject?): String {
         if (author == null) return ""
 
-        val direct = listOf(
+        val directUrl = listOf(
             "avatar",
             "avatar_url",
             "portrait_url",
@@ -333,7 +333,7 @@ class RealTiebaDataSource(
         ).firstNotNullOfOrNull { key ->
             author.optString(key).takeIf { it.isNotBlank() && it.startsWith("http") }
         }
-        if (!direct.isNullOrBlank()) return direct
+        if (!directUrl.isNullOrBlank()) return directUrl
 
         val portrait = author.optString("portrait")
         if (portrait.isNotBlank()) {
@@ -346,7 +346,9 @@ class RealTiebaDataSource(
     private fun parseImageUrls(item: JSONObject): List<String> {
         val results = linkedSetOf<String>()
         collectImageUrls(item, results)
-        return results.take(2)
+        return results
+            .filter { it.isNotBlank() }
+            .take(2)
     }
 
     private fun collectImageUrls(any: Any?, out: MutableSet<String>) {

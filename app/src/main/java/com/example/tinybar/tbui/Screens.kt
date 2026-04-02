@@ -67,6 +67,12 @@ import coil.compose.AsyncImage
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.layout.ContentScale
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.res.painterResource
+import coil.compose.SubcomposeAsyncImage
+import com.example.tinybar.R
+
 private enum class MainTab(val route: String, val label: String, val shortMark: String) {
     Feed("feed", "推荐", "荐"),
     Bars("bars", "进吧", "吧"),
@@ -651,9 +657,7 @@ private fun FeedThreadCard(
                 overflow = TextOverflow.Ellipsis
             )
 
-            FeedThreadImages(
-                imageUrls = thread.imageUrls
-            )
+            FeedThreadImages(thread.imageUrls)
 
             FeedThreadFooter(thread = thread)
         }
@@ -1119,54 +1123,89 @@ private fun FeedThreadHeader(thread: ThreadSummary) {
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         if (thread.avatarUrl.isNotBlank()) {
-            AsyncImage(
+            SubcomposeAsyncImage(
                 model = thread.avatarUrl,
                 contentDescription = "用户头像",
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                loading = {
+                    AvatarFallback(thread.author)
+                },
+                error = {
+                    AvatarFallback(thread.author)
+                }
             )
         } else {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = thread.author.take(1).ifBlank { "?" },
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+            AvatarFallback(thread.author)
         }
 
         Text(
             text = thread.author,
             style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun AvatarFallback(author: String) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = author.take(1).ifBlank { "?" },
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold
         )
     }
 }
 
 @Composable
 private fun FeedThreadImages(imageUrls: List<String>) {
-    when {
-        imageUrls.isEmpty() -> Unit
+    val validUrls = imageUrls.filter { it.isNotBlank() }
 
-        imageUrls.size == 1 -> {
-            AsyncImage(
-                model = imageUrls.first(),
+    when {
+        validUrls.isEmpty() -> Unit
+
+        validUrls.size == 1 -> {
+            SubcomposeAsyncImage(
+                model = validUrls.first(),
                 contentDescription = "帖子图片",
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(180.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                loading = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    )
+                },
+                error = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "图片加载失败",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             )
         }
 
@@ -1175,8 +1214,8 @@ private fun FeedThreadImages(imageUrls: List<String>) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                imageUrls.take(2).forEach { url ->
-                    AsyncImage(
+                validUrls.take(2).forEach { url ->
+                    SubcomposeAsyncImage(
                         model = url,
                         contentDescription = "帖子图片",
                         modifier = Modifier
@@ -1184,7 +1223,27 @@ private fun FeedThreadImages(imageUrls: List<String>) {
                             .height(140.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentScale = ContentScale.Crop
+                        contentScale = ContentScale.Crop,
+                        loading = {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                            )
+                        },
+                        error = {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "图片加载失败",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     )
                 }
             }
@@ -1205,11 +1264,23 @@ private fun FeedThreadFooter(thread: ThreadSummary) {
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            MetaText("${thread.replyCount}")
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.ic_comment_bubble),
+                    contentDescription = "评论数",
+                    modifier = Modifier.size(18.dp)
+                )
+                MetaText(thread.replyCount.toString())
+            }
+
             MetaText(thread.lastReplyTimeText)
         }
     }
 }
+
 
 private fun buildThreadExcerpt(thread: ThreadSummary): String {
     return if (thread.excerpt.isNotBlank()) {
