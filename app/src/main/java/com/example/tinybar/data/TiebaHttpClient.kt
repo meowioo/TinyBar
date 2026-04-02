@@ -104,4 +104,38 @@ class TiebaHttpClient(
             resp.body?.bytes() ?: throw IOException("Empty body")
         }
     }
+
+    suspend fun postProtoByUrl(
+        url: String,
+        bytes: ByteArray,
+        extraHeaders: Map<String, String> = emptyMap()
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val partHeaders = Headers.headersOf(
+            "Content-Disposition",
+            "form-data; name=\"data\"; filename=\"file\""
+        )
+
+        val multipartBody = MultipartBody.Builder("-*_r1999")
+            .setType(MultipartBody.FORM)
+            .addPart(partHeaders, bytes.toRequestBody(null))
+            .build()
+
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .post(multipartBody)
+            .header("User-Agent", "TinyBar/0.1")
+            .header("Connection", "keep-alive")
+            .header("x_bd_data_type", "protobuf")
+
+        extraHeaders.forEach { (k, v) ->
+            requestBuilder.header(k, v)
+        }
+
+        client.newCall(requestBuilder.build()).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IOException("HTTP ${resp.code}: ${resp.message}")
+            }
+            resp.body?.bytes() ?: throw IOException("Empty body")
+        }
+    }
 }

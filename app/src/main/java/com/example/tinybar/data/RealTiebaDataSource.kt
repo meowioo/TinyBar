@@ -1,5 +1,6 @@
 package com.example.tinybar.data
 
+import android.os.Build
 import com.example.tinybar.model.FeedPage
 import com.example.tinybar.model.ForumInfo
 import com.example.tinybar.model.ForumPage
@@ -13,55 +14,71 @@ import com.example.tinybar.tieba.proto.PbPageReqIdl
 import com.example.tinybar.tieba.proto.PbPageResIdl
 import com.example.tinybar.tieba.proto.Post
 import com.example.tinybar.tieba.proto.User
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import com.example.tinybar.util.TiebaSignUtil
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URLEncoder
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 private const val PAGE_SIZE = 30
 private const val MAIN_VERSION = "12.64.1.1"
 
+/**
+ * 这个版本的推荐页逻辑：
+ * - query 为空：走官方推荐接口 /c/f/excellent/personalized
+ * - query 不为空：走你已经接通的 /mo/q/search/thread 全贴吧搜索
+ *
+ * 说明：
+ * 1. 推荐接口这里用的是 tiebalite 同样使用的官方 JSON 推荐接口，
+ *    这样能在你当前 TinyBar 结构下更稳定地落地。
+ * 2. 搜索接口保持你现在已经跑通的 hybrid 搜索链路。
+ */
 class RealTiebaDataSource(
     private val http: TiebaHttpClient = TiebaHttpClient()
 ) : TiebaDataSource {
 
-    private val recommendedBars = listOf(
-        "原神",
-        "崩坏：星穹铁道",
-        "明日方舟",
-        "安卓",
-        "数码",
-        "Jetpack Compose"
-    )
+    /**
+     * 官方推荐接口 host。
+     * 注意：需要在 network_security_config.xml 里额外放行 c.tieba.baidu.com
+     */
+    private val officialPersonalizedHost = "http://c.tieba.baidu.com"
 
-    override suspend fun getRecommendedFeed(query: String, page: Int): FeedPage = coroutineScope {
-        if (query.isBlank()) {
-            val forumPages = recommendedBars.map { barName ->
-                async {
-                    runCatching { getForumPage(barName, page) }.getOrNull()
-                }
-            }.awaitAll().filterNotNull()
+    /**
+     * 为了尽量贴近官方客户端请求，准备一个本地 OkHttpClient。
+     * 不复用 TiebaHttpClient 的 postSignedForm，
+     * 因为它当前默认 host 是 tiebac.baidu.com，而推荐接口在 c.tieba.baidu.com。
+     */
+    private val officialClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
 
-            val mergedThreads = forumPages
-                .flatMap { it.threads }
-                .sortedByDescending { it.replyCount }
-                .distinctBy { it.tid }
+    /**
+     * 简单生成一个会话级 CUID，避免每次都不同。
+     */
+    private val sessionCuid: String by lazy {
+        UUID.randomUUID().toString().replace("-", "")
+    }
 
-            return@coroutineScope FeedPage(
-                threads = mergedThreads,
-                hasMore = forumPages.any { it.threads.size >= PAGE_SIZE }
+    override suspend fun getRecommendedFeed(query: String, page: Int): FeedPage {
+        return if (query.isBlank()) {
+            getOfficialPersonalizedFeed(page = page)
+        } else {
+            searchThreadsByHybridApi(
+                keyword = query,
+                page = page
             )
         }
-
-        return@coroutineScope searchThreadsByHybridApi(
-            keyword = query,
-            page = page
-        )
     }
 
     override suspend fun getForumPage(forumName: String, page: Int): ForumPage {
@@ -165,11 +182,75 @@ class RealTiebaDataSource(
         }
     }
 
+    /**
+     * 官方推荐接口：
+     * POST http://c.tieba.baidu.com/c/f/excellent/personalized
+     *
+     * 这里按 tiebalite 的官方推荐参数组织方式来发：
+     * - load_type: 1 首次刷新，2 加载更多
+     * - pn: 页码
+     * - page_thread_count: 请求条数
+     * - q_type / need_forumlist / new_net_type / new_install 等保留默认值
+     *
+     * 返回是 JSON，不是 protobuf，所以这里用 JSONObject 解析。
+     */
+    private suspend fun getOfficialPersonalizedFeed(page: Int): FeedPage {
+        val loadType = if (page <= 1) 1 else 2
+        val responseText = postOfficialPersonalized(
+            loadType = loadType,
+            page = page
+        )
+
+        val root = JSONObject(responseText)
+        val errorCode = root.optString("error_code").ifBlank { "0" }
+        if (errorCode != "0") {
+            throw IllegalStateException(
+                "Tieba error $errorCode: ${root.optString("error_msg")}"
+            )
+        }
+
+        val threadList = root.optJSONArray("thread_list") ?: JSONArray()
+        val threads = buildList {
+            for (i in 0 until threadList.length()) {
+                val item = threadList.optJSONObject(i) ?: continue
+
+                add(
+                    ThreadSummary(
+                        tid = item.optString("tid").ifBlank { item.optString("id") },
+                        title = item.optString("title").ifBlank { "（无标题）" },
+                        author = parseAuthorName(item.optJSONObject("author")),
+                        replyCount = item.optString("reply_num").toIntOrNull() ?: 0,
+                        lastReplyTimeText = parseLastTime(item),
+                        forumName = item.optString("fname").ifBlank { "推荐" },
+                        excerpt = parsePersonalizedExcerpt(item)
+                    )
+                )
+            }
+        }.filter { it.tid.isNotBlank() }
+            .distinctBy { it.tid }
+
+        val pageInfo = root.optJSONObject("page_info") ?: root.optJSONObject("page")
+        val hasMore = when {
+            pageInfo?.has("has_more") == true -> pageInfo.optInt("has_more", 0) == 1
+            pageInfo?.has("hasMore") == true -> pageInfo.optInt("hasMore", 0) == 1
+            else -> threads.size >= 10
+        }
+
+        return FeedPage(
+            threads = threads,
+            hasMore = hasMore
+        )
+    }
+
+    /**
+     * 保留你现在已经接通的全贴吧搜索：
+     * /mo/q/search/thread
+     */
     private suspend fun searchThreadsByHybridApi(
         keyword: String,
         page: Int
     ): FeedPage {
-        val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
+        val encodedKeyword = java.net.URLEncoder.encode(keyword, "UTF-8")
         val referer = buildHybridSearchReferer(keyword)
 
         val url = buildString {
@@ -236,9 +317,141 @@ class RealTiebaDataSource(
         )
     }
 
-    private fun buildHybridSearchReferer(keyword: String): String {
-        val raw = "https://tieba.baidu.com/mo/q/hybrid/search?keyword=$keyword&_webview_time=${System.currentTimeMillis()}"
-        return URLEncoder.encode(raw, "UTF-8")
+    /**
+     * 官方推荐 form 提交。
+     *
+     * 这里不复用 TiebaHttpClient.postSignedForm，
+     * 因为推荐接口 host 是 c.tieba.baidu.com。
+     */
+    private suspend fun postOfficialPersonalized(
+        loadType: Int,
+        page: Int
+    ): String = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+
+        val rawParams: Map<String, Any> = mapOf(
+            "load_type" to loadType,
+            "pn" to page,
+            "_client_version" to "12.25.1.0",
+            "cuid_gid" to "",
+            "need_tags" to 0,
+            "page_thread_count" to 15,
+            "pre_ad_thread_count" to 0,
+            "sug_count" to 0,
+            "tag_code" to 0,
+            "q_type" to 1,
+            "need_forumlist" to 0,
+            "new_net_type" to 1,
+            "new_install" to 0,
+            "request_time" to now,
+            "invoke_source" to "",
+            "scr_dip" to "3.0",
+            "scr_h" to "2400",
+            "scr_w" to "1080",
+            "from" to "tieba",
+            "client_type" to 2,
+            "cuid" to sessionCuid,
+            "cuid_galaxy2" to sessionCuid,
+            "cuid_galaxy3" to "",
+            "brand" to Build.BRAND,
+            "model" to Build.MODEL,
+            "cmode" to 1,
+            "framework_ver" to "3340042",
+            "is_teenager" to 0,
+            "sdk_ver" to "2.34.0",
+            "start_type" to 1,
+            "active_timestamp" to now
+        )
+
+        val signedParams = TiebaSignUtil.sign(rawParams)
+
+        val body = FormBody.Builder().apply {
+            signedParams.forEach { (k, v) ->
+                add(k, v)
+            }
+        }.build()
+
+        val request = Request.Builder()
+            .url("$officialPersonalizedHost/c/f/excellent/personalized")
+            .post(body)
+            .header("User-Agent", "bdtb for Android 12.25.1.0")
+            .header("Host", "c.tieba.baidu.com")
+            .header("Connection", "keep-alive")
+            .header("client_type", "2")
+            .header("charset", "UTF-8")
+            .header("client_user_token", "")
+            .header(
+                "Cookie",
+                "CUID=$sessionCuid;ka=open;TBBRAND=${Build.MODEL};"
+            )
+            .build()
+
+        officialClient.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw IOException("HTTP ${resp.code}: ${resp.message}")
+            }
+            resp.body?.string() ?: throw IOException("Empty body")
+        }
+    }
+
+    private fun parseAuthorName(author: JSONObject?): String {
+        if (author == null) return "未知用户"
+
+        return author.optString("name_show")
+            .ifBlank { author.optString("name") }
+            .ifBlank { "未知用户" }
+    }
+
+    private fun parseLastTime(item: JSONObject): String {
+        val lastTimeInt = item.optString("last_time_int").toLongOrNull()
+            ?: item.optLong("last_time_int", 0L)
+
+        return if (lastTimeInt > 0L) {
+            epochSecondsToText(lastTimeInt)
+        } else {
+            item.optString("last_time").ifBlank { "-" }
+        }
+    }
+
+    private fun parsePersonalizedExcerpt(item: JSONObject): String {
+        val abstractArray = item.optJSONArray("abstract")
+        if (abstractArray != null) {
+            val text = extractAbstractText(abstractArray)
+            if (text.isNotBlank()) return text
+        }
+
+        val mediaHint = when {
+            item.has("video_info") -> "[视频内容]"
+            else -> ""
+        }
+
+        return mediaHint
+    }
+
+    private fun extractAbstractText(array: JSONArray): String {
+        val parts = mutableListOf<String>()
+
+        for (i in 0 until array.length()) {
+            val any = array.opt(i)
+            when (any) {
+                is JSONObject -> {
+                    val text = any.optString("text")
+                        .ifBlank { any.optString("content") }
+                        .ifBlank { any.optString("abstract_text") }
+                    if (text.isNotBlank()) {
+                        parts.add(text)
+                    }
+                }
+
+                is String -> {
+                    if (any.isNotBlank()) parts.add(any)
+                }
+            }
+        }
+
+        return parts.joinToString(" ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun cleanSearchExcerpt(content: String): String {
@@ -247,6 +460,11 @@ class RealTiebaDataSource(
             .replace("&nbsp;", " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+    }
+
+    private fun buildHybridSearchReferer(keyword: String): String {
+        val raw = "https://tieba.baidu.com/mo/q/hybrid/search?keyword=$keyword&_webview_time=${System.currentTimeMillis()}"
+        return java.net.URLEncoder.encode(raw, "UTF-8")
     }
 
     private fun Post.toUiModel(): PostItem {
